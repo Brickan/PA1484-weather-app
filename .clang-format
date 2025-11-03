@@ -1,0 +1,7 @@
+BasedOnStyle: LLVM
+BreakBeforeBraces: Allman
+SortIncludes:    false
+ColumnLimit: 0
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
