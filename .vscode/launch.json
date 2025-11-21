@@ -12,9 +12,9 @@
             "type": "platformio-debug",
             "request": "launch",
             "name": "PIO Debug",
-            "executable": "C:/Users/moham/Downloads/Weather_app/.pio/build/T-Display-AMOLED/firmware.elf",
+            "executable": "C:/Users/brick/Documents/GitHub/PA1484-weather-app/.pio/build/T-Display-AMOLED/firmware.elf",
             "projectEnvName": "T-Display-AMOLED",
-            "toolchainBinDir": "C:/Users/moham/.platformio/packages/toolchain-xtensa-esp32s3/bin",
+            "toolchainBinDir": "C:/Users/brick/.platformio/packages/toolchain-xtensa-esp32s3/bin",
             "internalConsoleOptions": "openOnSessionStart",
             "preLaunchTask": {
                 "type": "PlatformIO",
@@ -25,18 +25,18 @@
             "type": "platformio-debug",
             "request": "launch",
             "name": "PIO Debug (skip Pre-Debug)",
-            "executable": "C:/Users/moham/Downloads/Weather_app/.pio/build/T-Display-AMOLED/firmware.elf",
+            "executable": "C:/Users/brick/Documents/GitHub/PA1484-weather-app/.pio/build/T-Display-AMOLED/firmware.elf",
             "projectEnvName": "T-Display-AMOLED",
-            "toolchainBinDir": "C:/Users/moham/.platformio/packages/toolchain-xtensa-esp32s3/bin",
+            "toolchainBinDir": "C:/Users/brick/.platformio/packages/toolchain-xtensa-esp32s3/bin",
             "internalConsoleOptions": "openOnSessionStart"
         },
         {
             "type": "platformio-debug",
             "request": "launch",
             "name": "PIO Debug (without uploading)",
-            "executable": "C:/Users/moham/Downloads/Weather_app/.pio/build/T-Display-AMOLED/firmware.elf",
+            "executable": "C:/Users/brick/Documents/GitHub/PA1484-weather-app/.pio/build/T-Display-AMOLED/firmware.elf",
             "projectEnvName": "T-Display-AMOLED",
-            "toolchainBinDir": "C:/Users/moham/.platformio/packages/toolchain-xtensa-esp32s3/bin",
+            "toolchainBinDir": "C:/Users/brick/.platformio/packages/toolchain-xtensa-esp32s3/bin",
             "internalConsoleOptions": "openOnSessionStart",
             "loadMode": "manual"
         }
