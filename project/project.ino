@@ -43,13 +43,8 @@
 // Change these settings to match your environment
 
 // WiFi Configuration - CHANGE THESE TO YOUR NETWORK!
-const char *WIFI_SSID = "BTH_Guest";// Your WiFi network name
+const char *WIFI_SSID = "BTH_Guest";          // Your WiFi network name
 const char *WIFI_PASSWORD = "nektarin87rosa"; // Your WiFi password //Talk to reception before each demo for password
-
-// Weather API Configuration
-// This URL gets weather data for Karlskrona, Sweden
-// To change location, modify the lon (longitude) and lat (latitude) values
-const char *API_URL = "https://opendata-download-metfcst.smhi.se/api/category/pmp3g/version/2/geotype/point/lon/15.59/lat/56.16/data.json";
 
 // Timezone Configuration (Central European Time with Daylight Saving)
 const char *TZ_INFO = "CET-1CEST,M3.5.0,M10.5.0/3";
@@ -103,15 +98,68 @@ struct DayWeather
     bool valid;       // True if data is available
 };
 
+/**
+ * Holds city information for weather data
+ */
+struct City
+{
+    const char *name; // City name
+    int stationId;    // SMHI station ID for historical data
+    float longitude;  // Longitude coordinate
+    float latitude;   // Latitude coordinate
+};
+
+/**
+ * Holds weather parameter information for historical data
+ */
+struct WeatherParameter
+{
+    const char *name; // Parameter name
+    int id;           // SMHI parameter ID
+    const char *unit; // Unit of measurement
+};
+
 // ============================================================================
 // SECTION 4: GLOBAL VARIABLES
 // ============================================================================
 // Variables that are used throughout the program
 
+// Available cities for weather data
+const City cities[] = {
+    {"Karlskrona", 65090, 15.59, 56.16},
+    {"Stockholm", 97400, 18.06, 59.33},
+    {"Gothenburg", 72420, 11.97, 57.71},
+    {"Malmo", 53300, 13.00, 55.61},
+    {"Kiruna", 180940, 20.22, 67.86}};
+const int NUM_CITIES = 5;
+int selectedCityIndex = 0; // Currently selected city (default: Karlskrona)
+
+// Available weather parameters for historical data
+const WeatherParameter parameters[] = {
+    {"Temperature", 1, "°C"},
+    {"Humidity", 6, "%"},
+    {"Wind Speed", 4, "m/s"},
+    {"Air Pressure", 9, "hPa"}};
+const int NUM_PARAMETERS = 4;
+int selectedParameterIndex = 0; // Currently selected parameter (default: Temperature)
+
 // Weather data storage
 TodayWeather today = {0};      // Current weather (initialized to zero)
 HourlyWeather hourly[3] = {0}; // 3-hour forecasts (Morning, Noon, Evening)
 DayWeather days[6] = {0};      // 6-day forecast
+
+// Historical data storage
+#define MAX_HISTORICAL_POINTS 3200
+struct HistoricalDataPoint
+{
+    time_t timestamp; // Unix timestamp
+    float value;      // Weather parameter value
+    bool valid;       // True if data is available
+};
+HistoricalDataPoint historicalData[MAX_HISTORICAL_POINTS] = {0};
+int historicalDataCount = 0;        // Number of valid data points
+int historicalSliderPosition = 100; // Slider position (0=oldest, 100=newest)
+bool historicalDataFetched = false; // True when historical data is loaded
 
 // System state flags
 volatile bool isFetching = false; // True when fetching data (volatile = can change unexpectedly)
@@ -178,6 +226,24 @@ lv_obj_t *dayStatusLabels[6] = {NULL};
 lv_obj_t *dayIconContainers[6] = {NULL};
 lv_obj_t *page2LoadingSpinner = NULL;
 lv_obj_t *page2LoadingLabel = NULL;
+
+// Page 3 (Settings) UI elements
+lv_obj_t *cityDropdown = NULL;      // City selection dropdown
+lv_obj_t *parameterDropdown = NULL; // Weather parameter dropdown
+
+// Page 4 (Historical Data) UI elements
+lv_obj_t *historicalChart = NULL;  // Chart for historical data
+lv_obj_t *historicalSlider = NULL; // Slider to scroll through data
+lv_obj_t *historicalLabel = NULL;  // Label showing current date/value
+lv_obj_t *yAxisMaxLabel = NULL;
+lv_obj_t *yAxisMinLabel = NULL;
+
+lv_obj_t *mainTileview = NULL;
+lv_obj_t *settingsTile = NULL;
+lv_obj_t *historicalTile = NULL;
+lv_obj_t *mainPageTile = NULL;
+lv_obj_t *forecastTile = NULL;
+int previousColumn = 1;
 
 // ============================================================================
 // SECTION 6: HELPER FUNCTIONS
@@ -575,6 +641,7 @@ void updateLoadingMessage(const char *message)
 // Forward declarations for UI update functions
 void updateCurrentWeatherDisplay();
 void updateForecastDisplay();
+void updateHistoricalChart();
 
 /**
  * Fetches weather data from SMHI API
@@ -615,6 +682,18 @@ void fetchWeatherData()
         days[i].rainChance = 0;
     }
 
+    // Build API URL dynamically based on selected city
+    char apiUrl[256];
+    snprintf(apiUrl, sizeof(apiUrl),
+             "https://opendata-download-metfcst.smhi.se/api/category/pmp3g/version/2/geotype/point/lon/%.2f/lat/%.2f/data.json",
+             cities[selectedCityIndex].longitude,
+             cities[selectedCityIndex].latitude);
+
+    Serial.printf("Fetching weather for %s (lon: %.2f, lat: %.2f)\n",
+                  cities[selectedCityIndex].name,
+                  cities[selectedCityIndex].longitude,
+                  cities[selectedCityIndex].latitude);
+
     // Create HTTPS client
     WiFiClientSecure client;
     client.setInsecure();  // Skip certificate verification for simplicity
@@ -631,7 +710,7 @@ void fetchWeatherData()
 
     while (retryCount > 0 && !connected)
     {
-        if (http.begin(client, API_URL))
+        if (http.begin(client, apiUrl))
         {
             connected = true;
             Serial.printf("Connected to API (attempt %d)\n", 4 - retryCount);
@@ -1169,6 +1248,243 @@ void fetchWeatherData()
     Serial.println("====== WEATHER FETCH COMPLETE ======");
 }
 
+/**
+ * Fetches historical weather data from SMHI API
+ * Uses latest-months period for hourly data from past ~4 months
+ */
+void fetchHistoricalData()
+{
+    // Check if already fetching
+    if (isFetching)
+    {
+        Serial.println("Already fetching data - skipping historical request");
+        return;
+    }
+
+    // Check WiFi connection
+    if (WiFi.status() != WL_CONNECTED)
+    {
+        Serial.println("No WiFi connection - cannot fetch historical data");
+        return;
+    }
+
+    isFetching = true;
+    Serial.println("Fetching historical data...");
+
+    // Show loading message
+    if (historicalLabel != NULL)
+    {
+        char loadingText[128];
+        snprintf(loadingText, sizeof(loadingText), "%s - %s\nLoading data...",
+                 cities[selectedCityIndex].name,
+                 parameters[selectedParameterIndex].name);
+        lv_label_set_text(historicalLabel, loadingText);
+        lv_timer_handler(); // Update UI immediately
+    }
+
+    // Clear old historical data
+    historicalDataCount = 0;
+    historicalDataFetched = false;
+    for (int i = 0; i < MAX_HISTORICAL_POINTS; i++)
+    {
+        historicalData[i].valid = false;
+    }
+
+    // Build API URL for historical data
+    // Format: /api/version/1.0/parameter/{param}/station/{station}/period/latest-months/data.json
+    char apiUrl[256];
+    snprintf(apiUrl, sizeof(apiUrl),
+             "https://opendata-download-metobs.smhi.se/api/version/1.0/parameter/%d/station/%d/period/latest-months/data.json",
+             parameters[selectedParameterIndex].id,
+             cities[selectedCityIndex].stationId);
+
+    Serial.printf("Fetching historical %s for %s (station: %d, parameter: %d)\n",
+                  parameters[selectedParameterIndex].name,
+                  cities[selectedCityIndex].name,
+                  cities[selectedCityIndex].stationId,
+                  parameters[selectedParameterIndex].id);
+
+    // Create HTTPS client
+    WiFiClientSecure client;
+    client.setInsecure();
+    client.setTimeout(30);
+
+    // Create HTTP client
+    HTTPClient http;
+    http.setTimeout(120000);
+    http.setReuse(false);
+
+    // Connect to API
+    if (!http.begin(client, apiUrl))
+    {
+        Serial.println("Failed to connect to historical API");
+        isFetching = false;
+        return;
+    }
+
+    Serial.println("Sending GET request to historical API...");
+    int responseCode = http.GET();
+    Serial.printf("HTTP response code: %d\n", responseCode);
+
+    if (responseCode != 200)
+    {
+        Serial.printf("HTTP error: %d\n", responseCode);
+        http.end();
+        isFetching = false;
+        return;
+    }
+
+    // Get response stream
+    WiFiClient *stream = http.getStreamPtr();
+    if (stream == NULL)
+    {
+        Serial.println("No data stream available");
+        http.end();
+        isFetching = false;
+        return;
+    }
+
+    // Find the start of value array in JSON
+    if (!stream->find("\"value\":["))
+    {
+        Serial.println("Could not find value array in response");
+        http.end();
+        isFetching = false;
+        return;
+    }
+
+    Serial.println("Parsing historical data...");
+
+    // Create JSON document for parsing
+    JsonDocument doc;
+
+    int dataCount = 0;
+    int totalAttempts = 0;
+    uint32_t parseStartTime = millis();
+    const int maxParseErrors = 100; // Increased to handle more data
+    int parseErrors = 0;
+
+    // Parse data points from the value array
+    // Format: {"date": timestamp_ms, "value": float_value, "quality": "string"}
+    while (stream->available() &&
+           dataCount < MAX_HISTORICAL_POINTS &&
+           parseErrors < maxParseErrors)
+    {
+        // Check for timeout (increased to 2 minutes for large datasets)
+        if (millis() - parseStartTime > 120000)
+        {
+            Serial.printf("Parsing timeout after %d data points\n", dataCount);
+            break;
+        }
+
+        // Let system breathe every 50 items
+        if (totalAttempts % 50 == 0)
+        {
+            yield();
+            lv_timer_handler();
+
+            // Progress update every 200 points
+            if (dataCount > 0 && dataCount % 200 == 0)
+            {
+                Serial.printf("Loaded %d data points so far...\n", dataCount);
+            }
+        }
+
+        // Clear document for next parse
+        doc.clear();
+
+        // Try to parse next data point object
+        // ArduinoJson automatically skips whitespace and commas
+        DeserializationError error = deserializeJson(doc, *stream);
+        totalAttempts++;
+
+        if (error)
+        {
+            if (error == DeserializationError::EmptyInput)
+            {
+                // End of array reached
+                Serial.println("End of data array reached (empty input)");
+                break;
+            }
+            parseErrors++;
+
+            // Log first few errors for debugging
+            if (parseErrors <= 5)
+            {
+                Serial.printf("Parse error #%d: %s (attempt %d, loaded %d points)\n",
+                              parseErrors, error.c_str(), totalAttempts, dataCount);
+            }
+            continue;
+        }
+
+        // Extract timestamp and value
+        long long timestamp_ms = doc["date"];
+        const char *value_str = doc["value"];
+        const char *quality = doc["quality"];
+
+        // Debug log first few data points
+        if (dataCount < 3)
+        {
+            Serial.printf("Data point %d: timestamp=%lld, value=%s, quality=%s\n",
+                          dataCount, timestamp_ms, value_str ? value_str : "NULL", quality ? quality : "NULL");
+        }
+
+        // Parse value and store if valid
+        if (value_str != NULL && timestamp_ms > 0)
+        {
+            float value = atof(value_str);
+
+            // Accept data with good quality (G) or Yellow (Y) quality
+            if (quality != NULL && (strcmp(quality, "G") == 0 || strcmp(quality, "Y") == 0))
+            {
+                historicalData[dataCount].timestamp = timestamp_ms / 1000; // Convert ms to seconds
+                historicalData[dataCount].value = value;
+                historicalData[dataCount].valid = true;
+                dataCount++;
+            }
+        }
+
+        // Consume the comma or closing bracket after the object
+        // This prevents the next parse from failing on the delimiter
+        while (stream->available())
+        {
+            char c = stream->read();
+            if (c == ',')
+            {
+                // Found comma, continue to next object
+                break;
+            }
+            else if (c == ']')
+            {
+                // End of array
+                Serial.println("End of data array reached (found ])");
+                goto parsing_done;
+            }
+            else if (c != ' ' && c != '\n' && c != '\r' && c != '\t')
+            {
+                // Unexpected character
+                break;
+            }
+        }
+    }
+
+parsing_done:
+    Serial.printf("Parsing complete: %d attempts, %d errors, %d valid data points\n",
+                  totalAttempts, parseErrors, dataCount);
+
+    http.end();
+
+    historicalDataCount = dataCount;
+    historicalDataFetched = true;
+
+    Serial.printf("Historical data fetch complete - %d data points loaded\n", dataCount);
+
+    // Update historical chart display
+    updateHistoricalChart();
+
+    isFetching = false;
+}
+
 // ============================================================================
 // SECTION 10: USER INTERFACE UPDATE FUNCTIONS
 // ============================================================================
@@ -1696,13 +2012,326 @@ void handleRefreshButton(lv_event_t *e)
 }
 
 /**
+ * Event handler for city selection modal button
+ */
+void handleCitySelection(lv_event_t *e)
+{
+    lv_obj_t *btn = lv_event_get_target(e);
+    int cityIndex = (int)(intptr_t)lv_event_get_user_data(e);
+
+    // Update selected city
+    selectedCityIndex = cityIndex;
+    Serial.printf("City changed to: %s\n", cities[selectedCityIndex].name);
+
+    // Update city label
+    if (cityLabel)
+    {
+        lv_label_set_text(cityLabel, cities[selectedCityIndex].name);
+    }
+
+    // Close the modal
+    lv_obj_t *modal = lv_obj_get_parent(lv_obj_get_parent(btn));
+    lv_obj_del(modal);
+
+    // Fetch new weather data for selected city
+    if (WiFi.status() == WL_CONNECTED && !isFetching)
+    {
+        fetchWeatherData();
+    }
+}
+
+/**
+ * Event handler for city label click - opens city selection modal
+ */
+void handleCityLabelClick(lv_event_t *e)
+{
+    Serial.println("City label clicked - opening city selector");
+
+    // Create modal background
+    lv_obj_t *modal = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(modal, LV_HOR_RES, LV_VER_RES);
+    lv_obj_set_style_bg_color(modal, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(modal, LV_OPA_80, 0);
+    lv_obj_set_style_border_width(modal, 0, 0);
+    lv_obj_clear_flag(modal, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Create content panel
+    lv_obj_t *panel = lv_obj_create(modal);
+    lv_obj_set_size(panel, 400, 380);
+    lv_obj_center(panel);
+    lv_obj_set_style_bg_color(panel, lv_color_hex(0x1E1E1E), 0);
+    lv_obj_set_style_border_color(panel, lv_color_hex(0x2196F3), 0);
+    lv_obj_set_style_border_width(panel, 2, 0);
+    lv_obj_set_style_radius(panel, 15, 0);
+
+    // Title
+    lv_obj_t *title = lv_label_create(panel);
+    lv_label_set_text(title, "Select City");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(0x2196F3), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
+
+    // Create city buttons
+    for (int i = 0; i < NUM_CITIES; i++)
+    {
+        lv_obj_t *btn = lv_btn_create(panel);
+        lv_obj_set_size(btn, 360, 50);
+        lv_obj_set_pos(btn, 20, 50 + (i * 60));
+
+        // Highlight currently selected city
+        if (i == selectedCityIndex)
+        {
+            lv_obj_set_style_bg_color(btn, lv_color_hex(0x2196F3), 0);
+        }
+        else
+        {
+            lv_obj_set_style_bg_color(btn, lv_color_hex(0x333333), 0);
+        }
+
+        lv_obj_set_style_radius(btn, 8, 0);
+
+        // Add city name label
+        lv_obj_t *label = lv_label_create(btn);
+        lv_label_set_text(label, cities[i].name);
+        lv_obj_set_style_text_font(label, &lv_font_montserrat_18, 0);
+        lv_obj_center(label);
+
+        // Add click event
+        lv_obj_add_event_cb(btn, handleCitySelection, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+    }
+}
+
+/**
+ * Event handler for city dropdown in settings
+ */
+void handleCityDropdownChange(lv_event_t *e)
+{
+    uint16_t selection = lv_dropdown_get_selected(cityDropdown);
+    selectedCityIndex = selection;
+    Serial.printf("City changed to: %s\n", cities[selectedCityIndex].name);
+
+    // Update city label on main page
+    if (cityLabel)
+    {
+        lv_label_set_text(cityLabel, cities[selectedCityIndex].name);
+    }
+
+    // Fetch new weather data for selected city
+    if (WiFi.status() == WL_CONNECTED && !isFetching)
+    {
+        fetchWeatherData();
+    }
+
+    // Always update historical label and invalidate data
+    historicalDataFetched = false;
+    historicalDataCount = 0;
+
+    if (historicalLabel != NULL)
+    {
+        char labelText[128];
+        snprintf(labelText, sizeof(labelText), "%s - %s\nClick 'Load Historical Data'",
+                 cities[selectedCityIndex].name,
+                 parameters[selectedParameterIndex].name);
+        lv_label_set_text(historicalLabel, labelText);
+    }
+
+    // Clear historical chart data
+    if (historicalChart != NULL)
+    {
+        lv_chart_series_t *series = lv_chart_get_series_next(historicalChart, NULL);
+        if (series != NULL)
+        {
+            for (int i = 0; i < 100; i++)
+            {
+                lv_chart_set_value_by_id(historicalChart, series, i, 0);
+            }
+            lv_chart_refresh(historicalChart);
+        }
+    }
+}
+
+/**
+ * Event handler for parameter dropdown in settings
+ */
+void handleParameterDropdownChange(lv_event_t *e)
+{
+    uint16_t selection = lv_dropdown_get_selected(parameterDropdown);
+    selectedParameterIndex = selection;
+    Serial.printf("Parameter changed to: %s\n", parameters[selectedParameterIndex].name);
+
+    // Always update historical label and invalidate data
+    historicalDataFetched = false;
+    historicalDataCount = 0;
+
+    if (historicalLabel != NULL)
+    {
+        char labelText[128];
+        snprintf(labelText, sizeof(labelText), "%s - %s\nClick 'Load Historical Data'",
+                 cities[selectedCityIndex].name,
+                 parameters[selectedParameterIndex].name);
+        lv_label_set_text(historicalLabel, labelText);
+    }
+
+    // Clear chart data
+    if (historicalChart != NULL)
+    {
+        lv_chart_series_t *series = lv_chart_get_series_next(historicalChart, NULL);
+        if (series != NULL)
+        {
+            for (int i = 0; i < 100; i++)
+            {
+                lv_chart_set_value_by_id(historicalChart, series, i, 0);
+            }
+            lv_chart_refresh(historicalChart);
+        }
+    }
+}
+
+/**
+ * Event handler for historical data slider
+ * Updates chart display when slider is moved
+ */
+void handleHistoricalSlider(lv_event_t *e)
+{
+    int32_t value = lv_slider_get_value(historicalSlider);
+    historicalSliderPosition = value;
+
+    // Update chart with new window of data
+    updateHistoricalChart();
+}
+
+/**
+ * Updates historical chart with data based on slider position
+ * Slider at 0 = oldest data, slider at 100 = newest data
+ */
+void updateHistoricalChart()
+{
+    if (!historicalDataFetched || historicalDataCount == 0 || historicalChart == NULL)
+    {
+        Serial.printf("updateHistoricalChart: Cannot update - fetched=%d, count=%d, chart=%p\n",
+                      historicalDataFetched, historicalDataCount, historicalChart);
+        return;
+    }
+
+    // Get the first series from the chart
+    lv_chart_series_t *series = lv_chart_get_series_next(historicalChart, NULL);
+    if (series == NULL)
+    {
+        Serial.println("updateHistoricalChart: No chart series found");
+        return;
+    }
+
+    // Calculate which data points to show based on slider position
+    // Slider 0-100 maps to oldest-newest data
+    const int pointsToShow = 168;
+    int dataWindowSize = min(historicalDataCount, pointsToShow);
+
+    // Calculate start index based on slider position (0-100)
+    // slider at 100 = show latest data (end of array)
+    // slider at 0 = show oldest data (start of array)
+    int maxStartIndex = max(0, historicalDataCount - dataWindowSize);
+    int startIndex = (maxStartIndex * historicalSliderPosition) / 100;
+
+    Serial.printf("updateHistoricalChart: slider=%d, dataCount=%d, startIndex=%d, windowSize=%d\n",
+                  historicalSliderPosition, historicalDataCount, startIndex, dataWindowSize);
+
+    // Find min and max values for y-axis scaling - with safety checks
+    float minVal = 999999.0;
+    float maxVal = -999999.0;
+    bool foundValidData = false;
+
+    for (int i = 0; i < dataWindowSize; i++)
+    {
+        int dataIndex = startIndex + i;
+        if (dataIndex < historicalDataCount && historicalData[dataIndex].valid)
+        {
+            float val = historicalData[dataIndex].value;
+            if (val < minVal)
+                minVal = val;
+            if (val > maxVal)
+                maxVal = val;
+            foundValidData = true;
+        }
+    }
+
+    // If no valid data found, use default range
+    if (!foundValidData)
+    {
+        Serial.println("updateHistoricalChart: No valid data in window");
+        minVal = 0;
+        maxVal = 100;
+    }
+
+    // Add some padding to the range
+    float range = maxVal - minVal;
+    if (range < 1.0)
+        range = 1.0; // Minimum range
+    minVal -= range * 0.1;
+    maxVal += range * 0.1;
+
+    // Update chart range
+    lv_chart_set_range(historicalChart, LV_CHART_AXIS_PRIMARY_Y,
+                       (int)(minVal * 10), (int)(maxVal * 10));
+
+    if (yAxisMaxLabel != NULL && yAxisMinLabel != NULL)
+    {
+        char maxStr[32], minStr[32];
+        snprintf(maxStr, sizeof(maxStr), "%.1f%s", maxVal, parameters[selectedParameterIndex].unit);
+        snprintf(minStr, sizeof(minStr), "%.1f%s", minVal, parameters[selectedParameterIndex].unit);
+        lv_label_set_text(yAxisMaxLabel, maxStr);
+        lv_label_set_text(yAxisMinLabel, minStr);
+    }
+
+    // Fill chart with data using LVGL API
+    for (int i = 0; i < pointsToShow; i++)
+    {
+        int value = 0;
+        if (i < dataWindowSize)
+        {
+            int dataIndex = startIndex + i;
+            if (dataIndex < historicalDataCount && historicalData[dataIndex].valid)
+            {
+                // Scale value to fit in chart (multiply by 10 to match range)
+                value = (int)(historicalData[dataIndex].value * 10);
+            }
+        }
+        lv_chart_set_value_by_id(historicalChart, series, i, value);
+    }
+
+    lv_chart_refresh(historicalChart);
+
+    // Update label with date range
+    if (historicalLabel != NULL && startIndex < historicalDataCount)
+    {
+        struct tm timeinfo_start;
+        struct tm timeinfo_end;
+        time_t start_time = historicalData[startIndex].timestamp;
+        time_t end_time = historicalData[min(startIndex + dataWindowSize - 1, historicalDataCount - 1)].timestamp;
+
+        localtime_r(&start_time, &timeinfo_start);
+        localtime_r(&end_time, &timeinfo_end);
+
+        char dateStr[128];
+        snprintf(dateStr, sizeof(dateStr), "%s - %s\n%02d/%02d %02d:%02d - %02d/%02d %02d:%02d",
+                 cities[selectedCityIndex].name,
+                 parameters[selectedParameterIndex].name,
+                 timeinfo_start.tm_mon + 1, timeinfo_start.tm_mday,
+                 timeinfo_start.tm_hour, timeinfo_start.tm_min,
+                 timeinfo_end.tm_mon + 1, timeinfo_end.tm_mday,
+                 timeinfo_end.tm_hour, timeinfo_end.tm_min);
+
+        lv_label_set_text(historicalLabel, dateStr);
+    }
+}
+
+/**
  * Creates Page 1 (Current Weather) UI elements
  */
 void createCurrentWeatherPage(lv_obj_t *page1)
 {
-    // City name label
+    // City name label (display only - change in Settings page)
     cityLabel = lv_label_create(page1);
-    lv_label_set_text(cityLabel, "Karlskrona");
+    lv_label_set_text(cityLabel, cities[selectedCityIndex].name);
     lv_obj_set_style_text_font(cityLabel, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(cityLabel, lv_color_hex(0x2196F3), 0);
     lv_obj_align(cityLabel, LV_ALIGN_TOP_MID, 0, 30);
@@ -1866,8 +2495,22 @@ void createCurrentWeatherPage(lv_obj_t *page1)
     lv_label_set_text(updateLabel, "Updated: Never");
     lv_obj_set_style_text_color(updateLabel, lv_color_hex(0x888888), 0);
     lv_obj_set_style_text_font(updateLabel, &lv_font_montserrat_12, 0);
-    lv_obj_align(updateLabel, LV_ALIGN_BOTTOM_LEFT, 5, -40);
+    lv_obj_align(updateLabel, LV_ALIGN_BOTTOM_LEFT, 5, -5);
     lv_obj_add_flag(updateLabel, LV_OBJ_FLAG_HIDDEN);
+
+    // Group number label
+    lv_obj_t *groupLabel = lv_label_create(page1);
+    lv_label_set_text(groupLabel, "Group 4");
+    lv_obj_set_style_text_color(groupLabel, lv_color_hex(0x888888), 0);
+    lv_obj_set_style_text_font(groupLabel, &lv_font_montserrat_12, 0);
+    lv_obj_align(groupLabel, LV_ALIGN_BOTTOM_RIGHT, -5, -20);
+
+    // Version label
+    lv_obj_t *versionLabel = lv_label_create(page1);
+    lv_label_set_text(versionLabel, "v3");
+    lv_obj_set_style_text_color(versionLabel, lv_color_hex(0x888888), 0);
+    lv_obj_set_style_text_font(versionLabel, &lv_font_montserrat_12, 0);
+    lv_obj_align(versionLabel, LV_ALIGN_BOTTOM_RIGHT, -5, -5);
 
     // Refresh button
     refreshBtn = lv_btn_create(page1);
@@ -1965,6 +2608,200 @@ void createForecastPage(lv_obj_t *page2)
         lv_obj_add_flag(dayStatusLabels[i], LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(dayIconContainers[i], LV_OBJ_FLAG_HIDDEN);
     }
+}
+
+/**
+ * Creates Page 3 (Settings) UI elements
+ */
+void createSettingsPage(lv_obj_t *page3)
+{
+    // Page title
+    lv_obj_t *title = lv_label_create(page3);
+    lv_label_set_text(title, "Settings");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(0x2196F3), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 30);
+
+    // ============= CITY SELECTION SECTION =============
+    lv_obj_t *citySection = lv_label_create(page3);
+    lv_label_set_text(citySection, "City");
+    lv_obj_set_style_text_font(citySection, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(citySection, lv_color_white(), 0);
+    lv_obj_set_pos(citySection, 30, 80);
+
+    // City dropdown
+    cityDropdown = lv_dropdown_create(page3);
+    lv_dropdown_set_options(cityDropdown,
+                            "Karlskrona\n"
+                            "Stockholm\n"
+                            "Gothenburg\n"
+                            "Malmo\n"
+                            "Kiruna");
+    lv_dropdown_set_selected(cityDropdown, selectedCityIndex);
+    lv_obj_set_size(cityDropdown, 540, 45);
+    lv_obj_set_pos(cityDropdown, 30, 110);
+    lv_obj_set_style_bg_color(cityDropdown, lv_color_white(), 0);
+    lv_obj_set_style_text_color(cityDropdown, lv_color_black(), 0);
+    lv_obj_set_style_radius(cityDropdown, 8, 0);
+    lv_obj_add_event_cb(cityDropdown, handleCityDropdownChange, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_event_cb(cityDropdown, [](lv_event_t *e)
+                        {
+        lv_obj_t *list = lv_dropdown_get_list(lv_event_get_target(e));
+        if (list) {
+            lv_obj_set_style_bg_color(list, lv_color_white(), 0);
+            lv_obj_set_style_text_color(list, lv_color_black(), 0);
+            lv_obj_set_style_bg_color(list, lv_color_hex(0x2196F3), LV_PART_SELECTED);
+            lv_obj_set_style_text_color(list, lv_color_white(), LV_PART_SELECTED);
+        } }, LV_EVENT_CLICKED, NULL);
+
+    // ============= WEATHER PARAMETER SELECTION SECTION =============
+    lv_obj_t *paramSection = lv_label_create(page3);
+    lv_label_set_text(paramSection, "Weather Parameter");
+    lv_obj_set_style_text_font(paramSection, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(paramSection, lv_color_white(), 0);
+    lv_obj_set_pos(paramSection, 30, 180);
+
+    // Parameter dropdown
+    parameterDropdown = lv_dropdown_create(page3);
+    lv_dropdown_set_options(parameterDropdown,
+                            "Temperature\n"
+                            "Humidity\n"
+                            "Wind Speed\n"
+                            "Air Pressure");
+    lv_dropdown_set_selected(parameterDropdown, selectedParameterIndex);
+    lv_obj_set_size(parameterDropdown, 540, 45);
+    lv_obj_set_pos(parameterDropdown, 30, 210);
+    lv_obj_set_style_bg_color(parameterDropdown, lv_color_white(), 0);
+    lv_obj_set_style_text_color(parameterDropdown, lv_color_black(), 0);
+    lv_obj_set_style_radius(parameterDropdown, 8, 0);
+    lv_obj_add_event_cb(parameterDropdown, handleParameterDropdownChange, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_event_cb(parameterDropdown, [](lv_event_t *e)
+                        {
+        lv_obj_t *list = lv_dropdown_get_list(lv_event_get_target(e));
+        if (list) {
+            lv_obj_set_style_bg_color(list, lv_color_white(), 0);
+            lv_obj_set_style_text_color(list, lv_color_black(), 0);
+            lv_obj_set_style_bg_color(list, lv_color_hex(0x2196F3), LV_PART_SELECTED);
+            lv_obj_set_style_text_color(list, lv_color_white(), LV_PART_SELECTED);
+        } }, LV_EVENT_CLICKED, NULL);
+
+    // Info label
+    lv_obj_t *infoLabel = lv_label_create(page3);
+    lv_label_set_text(infoLabel, "Selected parameter will be used for historical data");
+    lv_obj_set_style_text_font(infoLabel, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(infoLabel, lv_color_hex(0x888888), 0);
+    lv_obj_set_pos(infoLabel, 30, 270);
+}
+
+/**
+ * Creates Page 4 (Historical Data) UI elements
+ * API: https://opendata-download-metobs.smhi.se/api/version/1.0/parameter/{param}/station/{station}/period/latest-months/data.json
+ */
+void createHistoricalPage(lv_obj_t *page4)
+{
+    // Page title
+    lv_obj_t *title = lv_label_create(page4);
+    lv_label_set_text(title, "Historical Data");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(0x2196F3), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 30);
+
+    // Info label showing selected parameter
+    historicalLabel = lv_label_create(page4);
+    lv_label_set_text_fmt(historicalLabel, "%s - %s",
+                          cities[selectedCityIndex].name,
+                          parameters[selectedParameterIndex].name);
+    lv_obj_set_style_text_font(historicalLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(historicalLabel, lv_color_white(), 0);
+    lv_obj_align(historicalLabel, LV_ALIGN_TOP_MID, 0, 70);
+
+    // Create chart for historical data
+    historicalChart = lv_chart_create(page4);
+    lv_obj_set_size(historicalChart, 500, 250);
+    lv_obj_set_pos(historicalChart, 70, 110);
+    lv_obj_set_style_bg_color(historicalChart, lv_color_hex(0x1E1E1E), 0);
+    lv_obj_set_style_border_color(historicalChart, lv_color_hex(0x2196F3), 0);
+    lv_obj_set_style_border_width(historicalChart, 2, 0);
+    lv_obj_set_style_radius(historicalChart, 10, 0);
+
+    yAxisMaxLabel = lv_label_create(page4);
+    lv_label_set_text(yAxisMaxLabel, "---");
+    lv_obj_set_style_text_font(yAxisMaxLabel, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(yAxisMaxLabel, lv_color_hex(0x888888), 0);
+    lv_obj_set_pos(yAxisMaxLabel, 5, 115);
+
+    yAxisMinLabel = lv_label_create(page4);
+    lv_label_set_text(yAxisMinLabel, "---");
+    lv_obj_set_style_text_font(yAxisMinLabel, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(yAxisMinLabel, lv_color_hex(0x888888), 0);
+    lv_obj_set_pos(yAxisMinLabel, 5, 340);
+
+    // Configure chart
+    lv_chart_set_type(historicalChart, LV_CHART_TYPE_LINE);
+    lv_chart_set_point_count(historicalChart, 168);
+    lv_chart_set_range(historicalChart, LV_CHART_AXIS_PRIMARY_Y, 0, 100); // Will be adjusted based on data
+    lv_chart_set_div_line_count(historicalChart, 5, 10);
+
+    // Style the chart
+    lv_obj_set_style_line_width(historicalChart, 3, LV_PART_ITEMS);
+    lv_obj_set_style_line_color(historicalChart, lv_color_hex(0x2196F3), LV_PART_ITEMS);
+    lv_obj_set_style_width(historicalChart, 0, LV_PART_INDICATOR);  // Hide points
+    lv_obj_set_style_height(historicalChart, 0, LV_PART_INDICATOR); // Hide points
+
+    // Add data series
+    lv_chart_series_t *series = lv_chart_add_series(historicalChart, lv_color_hex(0x2196F3), LV_CHART_AXIS_PRIMARY_Y);
+
+    // Initialize with empty data using LVGL API
+    for (int i = 0; i < 168; i++)
+    {
+        lv_chart_set_value_by_id(historicalChart, series, i, 0);
+    }
+
+    lv_chart_refresh(historicalChart);
+
+    // Slider for scrolling through historical data
+    // Depleted (0) = oldest data, Full (100) = latest data
+    historicalSlider = lv_slider_create(page4);
+    lv_obj_set_size(historicalSlider, 500, 15);
+    lv_obj_set_pos(historicalSlider, 70, 375);
+    lv_slider_set_range(historicalSlider, 0, 100);
+    lv_slider_set_value(historicalSlider, 100, LV_ANIM_OFF); // Start at newest data
+    lv_obj_set_style_bg_color(historicalSlider, lv_color_hex(0x2196F3), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(historicalSlider, lv_color_hex(0x333333), LV_PART_MAIN);
+    lv_obj_add_event_cb(historicalSlider, handleHistoricalSlider, LV_EVENT_VALUE_CHANGED, NULL);
+
+    // Slider labels
+    lv_obj_t *oldestLabel = lv_label_create(page4);
+    lv_label_set_text(oldestLabel, "Oldest");
+    lv_obj_set_style_text_font(oldestLabel, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(oldestLabel, lv_color_hex(0x888888), 0);
+    lv_obj_set_pos(oldestLabel, 70, 395);
+
+    lv_obj_t *latestLabel = lv_label_create(page4);
+    lv_label_set_text(latestLabel, "Latest");
+    lv_obj_set_style_text_font(latestLabel, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(latestLabel, lv_color_hex(0x888888), 0);
+    lv_obj_set_pos(latestLabel, 520, 395);
+
+    // Load data button
+    lv_obj_t *loadBtn = lv_btn_create(page4);
+    lv_obj_set_size(loadBtn, 200, 45);
+    lv_obj_align(loadBtn, LV_ALIGN_BOTTOM_MID, 0, -10);
+    lv_obj_set_style_bg_color(loadBtn, lv_color_hex(0x2196F3), 0);
+    lv_obj_set_style_radius(loadBtn, 8, 0);
+
+    lv_obj_t *btnLabel = lv_label_create(loadBtn);
+    lv_label_set_text(btnLabel, "Load Historical Data");
+    lv_obj_set_style_text_font(btnLabel, &lv_font_montserrat_14, 0);
+    lv_obj_center(btnLabel);
+
+    // Add event handler for load button
+    lv_obj_add_event_cb(loadBtn, [](lv_event_t *e)
+                        {
+        if (WiFi.status() == WL_CONNECTED && !isFetching)
+        {
+            fetchHistoricalData();
+        } }, LV_EVENT_CLICKED, NULL);
 }
 
 /**
@@ -2093,8 +2930,6 @@ void createMainUI()
     lv_obj_set_style_bg_opa(statusBar, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(statusBar, 0, 0);
     lv_obj_set_style_pad_all(statusBar, 0, 0);
-    lv_obj_add_flag(statusBar, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(statusBar, handleStatusBarClick, LV_EVENT_CLICKED, NULL);
 
     // WiFi icon in status bar
     wifiIcon = lv_label_create(statusBar);
@@ -2110,19 +2945,81 @@ void createMainUI()
     lv_obj_set_style_text_color(timeLabel, lv_color_white(), 0);
     lv_obj_align(timeLabel, LV_ALIGN_RIGHT_MID, -5, 0);
 
-    // Create pages
-    lv_obj_t *page1 = lv_tileview_add_tile(tileview, 0, 0, LV_DIR_RIGHT);
-    lv_obj_set_style_bg_color(page1, lv_color_black(), 0);
-    lv_obj_set_scrollbar_mode(page1, LV_SCROLLBAR_MODE_OFF);
+    // Store tileview reference
+    mainTileview = tileview;
 
-    lv_obj_t *page2 = lv_tileview_add_tile(tileview, 1, 0, LV_DIR_LEFT);
-    lv_obj_set_style_bg_color(page2, lv_color_black(), 0);
-    lv_obj_set_scrollbar_mode(page2, LV_SCROLLBAR_MODE_OFF);
+    // Settings row (row 0) - ABOVE main content
+    // Only center (1,0) has actual settings, left/right redirect to center
+    lv_obj_t *settingsLeft = lv_tileview_add_tile(tileview, 0, 0, (lv_dir_t)(LV_DIR_BOTTOM | LV_DIR_RIGHT));
+    lv_obj_set_style_bg_color(settingsLeft, lv_color_black(), 0);
+    lv_obj_set_scrollbar_mode(settingsLeft, LV_SCROLLBAR_MODE_OFF);
 
-    // Create page contents
-    createCurrentWeatherPage(page1);
-    createForecastPage(page2);
-    createDropdownMenu(statusBar);
+    settingsTile = lv_tileview_add_tile(tileview, 1, 0, (lv_dir_t)(LV_DIR_BOTTOM | LV_DIR_LEFT | LV_DIR_RIGHT));
+    lv_obj_set_style_bg_color(settingsTile, lv_color_black(), 0);
+    lv_obj_set_scrollbar_mode(settingsTile, LV_SCROLLBAR_MODE_OFF);
+
+    lv_obj_t *settingsRight = lv_tileview_add_tile(tileview, 2, 0, (lv_dir_t)(LV_DIR_BOTTOM | LV_DIR_LEFT));
+    lv_obj_set_style_bg_color(settingsRight, lv_color_black(), 0);
+    lv_obj_set_scrollbar_mode(settingsRight, LV_SCROLLBAR_MODE_OFF);
+
+    // Main content row (row 1) - all can swipe DOWN (pull down) to settings above
+    historicalTile = lv_tileview_add_tile(tileview, 0, 1, (lv_dir_t)(LV_DIR_RIGHT | LV_DIR_TOP));
+    lv_obj_set_style_bg_color(historicalTile, lv_color_black(), 0);
+    lv_obj_set_scrollbar_mode(historicalTile, LV_SCROLLBAR_MODE_OFF);
+
+    mainPageTile = lv_tileview_add_tile(tileview, 1, 1, (lv_dir_t)(LV_DIR_LEFT | LV_DIR_RIGHT | LV_DIR_TOP));
+    lv_obj_set_style_bg_color(mainPageTile, lv_color_black(), 0);
+    lv_obj_set_scrollbar_mode(mainPageTile, LV_SCROLLBAR_MODE_OFF);
+
+    forecastTile = lv_tileview_add_tile(tileview, 2, 1, (lv_dir_t)(LV_DIR_LEFT | LV_DIR_TOP));
+    lv_obj_set_style_bg_color(forecastTile, lv_color_black(), 0);
+    lv_obj_set_scrollbar_mode(forecastTile, LV_SCROLLBAR_MODE_OFF);
+
+    // Create main page contents
+    createHistoricalPage(historicalTile);
+    createCurrentWeatherPage(mainPageTile);
+    createForecastPage(forecastTile);
+
+    createSettingsPage(settingsTile);
+
+    lv_obj_add_event_cb(tileview, [](lv_event_t *e)
+                        {
+        static bool onSettings = false;
+        static bool redirecting = false;
+
+        if (redirecting) {
+            redirecting = false;
+            return;
+        }
+
+        lv_obj_t *tile = lv_tileview_get_tile_act(mainTileview);
+        lv_coord_t col = lv_obj_get_x(tile) / lv_obj_get_width(tile);
+        lv_coord_t row = lv_obj_get_y(tile) / lv_obj_get_height(tile);
+
+        if (row == 0) {
+            if (col != 1) {
+                redirecting = true;
+                lv_obj_set_tile(mainTileview, settingsTile, LV_ANIM_ON);
+            }
+            onSettings = true;
+        }
+        else if (row == 1) {
+            if (onSettings) {
+                onSettings = false;
+                if (col != previousColumn) {
+                    redirecting = true;
+                    lv_obj_t *targetTile = historicalTile;
+                    if (previousColumn == 1) targetTile = mainPageTile;
+                    else if (previousColumn == 2) targetTile = forecastTile;
+                    lv_obj_set_tile(mainTileview, targetTile, LV_ANIM_ON);
+                }
+            } else {
+                previousColumn = col;
+            }
+        } }, LV_EVENT_VALUE_CHANGED, NULL);
+
+    // Set initial page to Main (center)
+    lv_obj_set_tile(tileview, mainPageTile, LV_ANIM_OFF);
 
     // Update display
     lv_timer_handler();
