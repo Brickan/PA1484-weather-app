@@ -1,0 +1,6 @@
+# ESP32 Simulator Preferences Storage
+# This file persists settings across simulator sessions
+# Format: namespace:key=type:value
+
+weather_app:cityIndex=i:0
+weather_app:paramIndex=i:0

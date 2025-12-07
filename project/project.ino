@@ -1,26 +1,18 @@
-/**
- * ============================================================================
- * WEATHER STATION APPLICATION FOR ESP32-T4-S3
- * ============================================================================
- *
- * This weather application displays real-time weather data from SMHI.
- * Hardware: LilyGo T4-S3 AMOLED (ESP32-S3 with 600x450 display)
- *
- * Features:
- * - Current weather display with temperature, humidity, wind, and pressure
- * - 3-hour forecast (Morning, Noon, Evening)
- * - 6-day weather forecast
- * - WiFi connectivity with auto-reconnection
- * - Interactive dropdown settings menu
- * - Auto-refresh with configurable intervals
- * - Swipeable pages for different views
- *
- */
+// Weather Station - ESP32-T4-S3
+// SMHI Weather Data Display
+// Group 4 - V.4
+//
+// Sections:
+//  1. Includes        7. Time Sync       13. Setup/Loop
+//  2. Config          8. Loading
+//  3. Structures      9. Storage
+//  4. Globals        10. API Fetching
+//  5. UI Objects     11. UI Updates
+//  6. Helpers        12. UI Creation
 
 // ============================================================================
 // SECTION 1: LIBRARY INCLUDES
 // ============================================================================
-// These libraries provide the functionality we need for the weather station
 
 #include <Arduino.h>          // Basic Arduino functions
 #include <WiFi.h>             // WiFi connectivity
@@ -36,15 +28,14 @@
 #include "esp_task_wdt.h"     // Watchdog timer
 #include "time.h"             // Time functions
 #include "icons.h"            // Weather icons
+#include <Preferences.h>      // Non-volatile storage for settings
 
 // ============================================================================
 // SECTION 2: CONFIGURATION SETTINGS
 // ============================================================================
-// Change these settings to match your environment
-
-// WiFi Configuration - CHANGE THESE TO YOUR NETWORK!
-const char *WIFI_SSID = "BTH_Guest";          // Your WiFi network name
-const char *WIFI_PASSWORD = "nektarin87rosa"; // Your WiFi password //Talk to reception before each demo for password
+// WiFi Configuration
+const char *WIFI_SSID = "APx";                   // WiFi network name
+const char *WIFI_PASSWORD = "Password.Password"; // WiFi password
 
 // Timezone Configuration (Central European Time with Daylight Saving)
 const char *TZ_INFO = "CET-1CEST,M3.5.0,M10.5.0/3";
@@ -52,11 +43,8 @@ const char *TZ_INFO = "CET-1CEST,M3.5.0,M10.5.0/3";
 // ============================================================================
 // SECTION 3: DATA STRUCTURES
 // ============================================================================
-// These structures hold our weather data in an organized way
 
-/**
- * Holds data for a 3-hour forecast period
- */
+// Holds data for a 3-hour forecast period
 struct HourlyWeather
 {
     char time[8];     // Time label: "Morning", "Noon", or "Evening"
@@ -68,9 +56,7 @@ struct HourlyWeather
     bool valid;       // True if data is available
 };
 
-/**
- * Holds current weather data
- */
+// Holds current weather data
 struct TodayWeather
 {
     float temp;     // Current temperature in Celsius
@@ -83,9 +69,7 @@ struct TodayWeather
     bool valid;     // True if data is available
 };
 
-/**
- * Holds daily forecast data
- */
+// Holds daily forecast data
 struct DayWeather
 {
     char date[16];    // Date in format "2025-10-22"
@@ -98,9 +82,7 @@ struct DayWeather
     bool valid;       // True if data is available
 };
 
-/**
- * Holds city information for weather data
- */
+// Holds city information for weather data
 struct City
 {
     const char *name; // City name
@@ -109,9 +91,7 @@ struct City
     float latitude;   // Latitude coordinate
 };
 
-/**
- * Holds weather parameter information for historical data
- */
+// Holds weather parameter information for historical data
 struct WeatherParameter
 {
     const char *name; // Parameter name
@@ -122,7 +102,6 @@ struct WeatherParameter
 // ============================================================================
 // SECTION 4: GLOBAL VARIABLES
 // ============================================================================
-// Variables that are used throughout the program
 
 // Available cities for weather data
 const City cities[] = {
@@ -162,14 +141,13 @@ int historicalSliderPosition = 100; // Slider position (0=oldest, 100=newest)
 bool historicalDataFetched = false; // True when historical data is loaded
 
 // System state flags
-volatile bool isFetching = false; // True when fetching data (volatile = can change unexpectedly)
-bool timesynced = false;          // True when time is synchronized
-bool wifiEnabled = true;          // WiFi on/off state
-bool wifiConnecting = false;      // True during WiFi connection
-bool autoRefresh = true;          // Auto-refresh on/off
-bool dropdownOpen = false;        // Dropdown menu state
-bool page1IconsCreated = false;   // Page 1 icons created flag
-bool page2IconsCreated = false;   // Page 2 icons created flag
+volatile bool isFetching = false;
+bool timesynced = false;
+bool wifiEnabled = true;
+bool wifiConnecting = false;
+bool autoRefresh = true;
+bool page1IconsCreated = false;
+bool page2IconsCreated = false;
 
 // Timing variables
 unsigned long refreshInterval = 15 * 60 * 1000; // 15 minutes in milliseconds
@@ -178,19 +156,15 @@ unsigned long lastRefresh = 0;                  // Last refresh timestamp
 // Display object
 LilyGo_Class amoled; // Display driver instance
 
+// Preferences object for non-volatile storage
+Preferences preferences;
+const char *PREFS_NAMESPACE = "weather_app"; // Namespace for storing settings
+
 // ============================================================================
 // SECTION 5: USER INTERFACE OBJECTS
 // ============================================================================
-// These store references to UI elements so we can update them
 
-// Dropdown menu elements
-lv_obj_t *dropdownPanel = NULL;
-lv_obj_t *wifiToggleBtn = NULL;
-lv_obj_t *autoRefreshToggleBtn = NULL;
-lv_obj_t *intervalDropdown = NULL;
-lv_obj_t *wifiStatusLabel = NULL;
-lv_obj_t *wifiSignalLabel = NULL;
-lv_obj_t *wifiDetailsLabel = NULL;
+// Status bar elements
 lv_obj_t *wifiIcon = NULL;
 lv_obj_t *timeLabel = NULL;
 
@@ -250,14 +224,11 @@ int previousColumn = 1;
 // ============================================================================
 // Small functions that help with common tasks
 
-/**
- * Converts weather symbol code to description text
- * @param symbolCode Weather symbol code (1-27)
- * @return Description string like "Clear", "Cloudy", etc.
- */
+// Converts weather symbol code to description text
+// @param symbolCode Weather symbol code (1-27)
+// @return Description string like "Clear", "Cloudy", etc.
 const char *getWeatherDescription(int symbolCode)
 {
-    // Check if symbol code is valid
     if (symbolCode < 1 || symbolCode > 27)
     {
         return "Unknown";
@@ -294,75 +265,26 @@ const char *getWeatherDescription(int symbolCode)
         "Heavy snow"              // 27
     };
 
-    // Return the description (subtract 1 because array starts at 0)
     return descriptions[symbolCode - 1];
 }
 
-/**
- * Converts wind direction in degrees to compass direction
- * @param degrees Wind direction in degrees (0-359)
- * @return Compass direction like "N", "NE", "E", etc.
- */
+// Converts wind direction in degrees to compass direction
+// @param degrees Wind direction in degrees (0-359)
+// @return Compass direction like "N", "NE", "E", etc.
 const char *getWindDirection(int degrees)
 {
-    // Array of compass directions
     const char *directions[] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
-
-    // Calculate which direction (each covers 45 degrees)
-    // Add 23 to round to nearest direction
     int index = ((degrees + 23) / 45) % 8;
 
     return directions[index];
 }
 
-/**
- * Converts WiFi signal strength (RSSI) to percentage
- * @param rssi Signal strength in dBm (negative value)
- * @return Signal strength as percentage (0-100)
- */
-int convertRssiToPercent(int rssi)
-{
-    // -50 dBm or better = 100%
-    if (rssi >= -50)
-        return 100;
-
-    // -100 dBm or worse = 0%
-    if (rssi <= -100)
-        return 0;
-
-    // Linear conversion between -50 and -100
-    return 2 * (rssi + 100);
-}
-
-/**
- * Gets signal strength description from RSSI value
- * @param rssi Signal strength in dBm
- * @return Description like "Excellent", "Good", etc.
- */
-const char *getSignalStrengthText(int rssi)
-{
-    int percent = convertRssiToPercent(rssi);
-
-    if (percent >= 80)
-        return "Excellent";
-    if (percent >= 60)
-        return "Good";
-    if (percent >= 40)
-        return "Fair";
-    if (percent >= 20)
-        return "Weak";
-    return "Very Weak";
-}
-
-/**
- * Calculates time since last update
- * @return String like "5m", "2h", or "Never"
- */
+// Calculates time since last update
+// @return String like "5m", "2h", or "Never"
 const char *getTimeSinceUpdate()
 {
-    static char timeBuf[16]; // Static = keeps value between calls
+    static char timeBuf[16];
 
-    // Check if we've never refreshed
     if (lastRefresh == 0)
     {
         return "Never";
@@ -389,12 +311,10 @@ const char *getTimeSinceUpdate()
     return timeBuf;
 }
 
-/**
- * Calculates day of week from date string using Zeller's algorithm
- * @param dateStr Date string in format "YYYY-MM-DD"
- * @param dayName Buffer to store the day name
- * @param size Size of the buffer
- */
+// Calculates day of week from date string using Zeller's algorithm
+// @param dateStr Date string in format "YYYY-MM-DD"
+// @param dayName Buffer to store the day name
+// @param size Size of the buffer
 void calculateDayOfWeek(const char *dateStr, char *dayName, size_t size)
 {
     int year, month, day;
@@ -430,12 +350,10 @@ void calculateDayOfWeek(const char *dateStr, char *dayName, size_t size)
     dayName[size - 1] = '\0'; // Ensure null termination
 }
 
-/**
- * Formats date string to short format
- * @param dateStr Date string "YYYY-MM-DD"
- * @param shortDate Buffer for short format "Mon DD"
- * @param size Buffer size
- */
+// Formats date string to short format
+// @param dateStr Date string "YYYY-MM-DD"
+// @param shortDate Buffer for short format "Mon DD"
+// @param size Buffer size
 void formatDateShort(const char *dateStr, char *shortDate, size_t size)
 {
     int year, month, day;
@@ -469,96 +387,52 @@ void formatDateShort(const char *dateStr, char *shortDate, size_t size)
 // ============================================================================
 // Functions for keeping accurate time
 
-/**
- * Callback function called when time is synchronized
- * @param tv Time value structure
- */
+// Callback function called when time is synchronized
+// @param tv Time value structure
 void onTimeSync(struct timeval *tv)
 {
     timesynced = true;
     Serial.println("Time synchronized successfully");
 }
 
-/**
- * Initializes time synchronization with NTP servers
- */
+// Initializes time synchronization with NTP servers
 void initializeTimeSync()
 {
-    // Set timezone
     setenv("TZ", TZ_INFO, 1);
     tzset();
-
-    // Set callback for when time syncs
     sntp_set_time_sync_notification_cb(onTimeSync);
-
-    // Configure NTP client
     sntp_setoperatingmode(SNTP_OPMODE_POLL);
-
-    // Set multiple NTP servers for reliability
     sntp_setservername(0, "time.google.com");
     sntp_setservername(1, "pool.ntp.org");
     sntp_setservername(2, "time.cloudflare.com");
-
-    // Start NTP synchronization
     sntp_init();
-
     Serial.println("Time sync initialized");
 }
 
-/**
- * Updates the time display in the status bar
- */
+// Updates the time display in the status bar
 void updateTimeDisplay()
 {
-    // Check if we have a time label
     if (timeLabel == NULL)
         return;
 
-    // Check if time is synchronized
     if (!timesynced)
     {
-        lv_label_set_text(timeLabel, "--:-- --");
+        lv_label_set_text(timeLabel, "--:--");
         return;
     }
-
-    // Get current time
     time_t now;
     struct tm timeinfo;
     time(&now);
     localtime_r(&now, &timeinfo);
 
-    // Verify we have a valid year (should be 2024 or later)
     if (timeinfo.tm_year < (2024 - 1900))
     {
-        lv_label_set_text(timeLabel, "--:-- --");
+        lv_label_set_text(timeLabel, "--:--");
         return;
     }
 
-    // Convert to 12-hour format
     char timeStr[16];
-    int hour = timeinfo.tm_hour;
-    const char *period = "AM";
-
-    // Handle 12-hour conversion
-    if (hour == 0)
-    {
-        hour = 12; // Midnight is 12 AM
-    }
-    else if (hour == 12)
-    {
-        period = "PM"; // Noon is 12 PM
-    }
-    else if (hour > 12)
-    {
-        hour = hour - 12;
-        period = "PM";
-    }
-
-    // Format time string
-    snprintf(timeStr, sizeof(timeStr), "%d:%02d %s",
-             hour, timeinfo.tm_min, period);
-
-    // Update label
+    snprintf(timeStr, sizeof(timeStr), "%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min);
     lv_label_set_text(timeLabel, timeStr);
 }
 
@@ -567,10 +441,8 @@ void updateTimeDisplay()
 // ============================================================================
 // Functions to show/hide loading indicators
 
-/**
- * Shows or hides loading spinners
- * @param show True to show, false to hide
- */
+// Shows or hides loading spinners
+// @param show True to show, false to hide
 void setLoadingVisible(bool show)
 {
     // Handle Page 1 loading elements
@@ -607,10 +479,8 @@ void setLoadingVisible(bool show)
     lv_timer_handler();
 }
 
-/**
- * Updates loading message text
- * @param message Text to display
- */
+// Updates loading message text
+// @param message Text to display
 void updateLoadingMessage(const char *message)
 {
     // Check for null message
@@ -634,7 +504,80 @@ void updateLoadingMessage(const char *message)
 }
 
 // ============================================================================
-// SECTION 9: WEATHER DATA FETCHING
+// SECTION 9: PERSISTENT STORAGE FUNCTIONS
+// ============================================================================
+
+// Save current city and parameter to NVS
+void saveDefaultSettings()
+{
+    preferences.begin(PREFS_NAMESPACE, false);
+    preferences.putInt("cityIndex", selectedCityIndex);
+    preferences.putInt("paramIndex", selectedParameterIndex);
+    preferences.end();
+
+    Serial.println("✓ Settings saved to storage");
+    Serial.printf("  City: %s (index %d)\n", cities[selectedCityIndex].name, selectedCityIndex);
+    Serial.printf("  Parameter: %s (index %d)\n", parameters[selectedParameterIndex].name, selectedParameterIndex);
+}
+
+// Load saved city and parameter from NVS
+bool loadDefaultSettings()
+{
+    preferences.begin(PREFS_NAMESPACE, true);
+    int savedCity = preferences.getInt("cityIndex", 0);
+    int savedParam = preferences.getInt("paramIndex", 0);
+
+    preferences.end();
+
+    if (savedCity >= 0 && savedCity < 5)
+    {
+        selectedCityIndex = savedCity;
+    }
+    else
+    {
+        selectedCityIndex = 0;
+    }
+
+    if (savedParam >= 0 && savedParam < 4)
+    {
+        selectedParameterIndex = savedParam;
+    }
+    else
+    {
+        selectedParameterIndex = 0;
+    }
+
+    Serial.println("✓ Settings loaded from storage");
+    Serial.printf("  City: %s (index %d)\n", cities[selectedCityIndex].name, selectedCityIndex);
+    Serial.printf("  Parameter: %s (index %d)\n", parameters[selectedParameterIndex].name, selectedParameterIndex);
+
+    return (savedCity != 0 || savedParam != 0);
+}
+
+// Reset to saved defaults
+// Loads saved settings from NVS and updates UI dropdowns
+void resetToSavedDefaults()
+{
+    Serial.println("Resetting to saved defaults...");
+
+    // Load saved defaults from storage
+    loadDefaultSettings();
+
+    // Update UI dropdowns if they exist
+    if (cityDropdown != NULL)
+    {
+        lv_dropdown_set_selected(cityDropdown, selectedCityIndex);
+    }
+    if (parameterDropdown != NULL)
+    {
+        lv_dropdown_set_selected(parameterDropdown, selectedParameterIndex);
+    }
+
+    Serial.println("✓ Reset complete");
+}
+
+// ============================================================================
+// SECTION 10: WEATHER DATA FETCHING
 // ============================================================================
 // Main function for getting weather data from API
 
@@ -643,10 +586,7 @@ void updateCurrentWeatherDisplay();
 void updateForecastDisplay();
 void updateHistoricalChart();
 
-/**
- * Fetches weather data from SMHI API
- * This is the main data fetching function
- */
+// Fetch weather data from SMHI API
 void fetchWeatherData()
 {
     // Check if already fetching (prevent multiple simultaneous requests)
@@ -945,7 +885,7 @@ void fetchWeatherData()
                     }
                 }
 
-                // Mark as valid if we got weather symbol
+                // Mark as valid if weather symbol exists
                 if (today.symbol > 0)
                 {
                     strncpy(today.desc, getWeatherDescription(today.symbol),
@@ -1046,7 +986,7 @@ void fetchWeatherData()
         {                            // Start from tomorrow
             int dIdx = dayIndex - 1; // Map to days array index
 
-            // Make sure we don't go out of bounds (we only want 6 days)
+            // Bounds check (max 6 days)
             if (dIdx >= 0 && dIdx < 6)
             {
 
@@ -1092,26 +1032,26 @@ void fetchWeatherData()
                     }
 
                     // Store date and day name if not already done
-                    // Mark day as valid as soon as we have ANY data for it
+                    // Mark day as valid when any data is available
                     if (!days[dIdx].valid)
                     {
-                        // We got here, which means this is a new day with at least some data
+                        // New day with at least some data
                         strncpy(days[dIdx].date, date, sizeof(days[dIdx].date) - 1);
                         days[dIdx].date[sizeof(days[dIdx].date) - 1] = '\0';
                         calculateDayOfWeek(date, days[dIdx].dayName,
                                            sizeof(days[dIdx].dayName));
 
-                        // Check if we have temperature data
+                        // Check for temperature data
                         if (days[dIdx].tempMin < 999)
                         {
-                            // We have temperature data, mark as valid
+                            // Temperature data available, mark as valid
                             days[dIdx].valid = true;
                             daysCollected++;
                             Serial.printf("Day %d: %s\n", dIdx, date);
                         }
                         else if (days[dIdx].symbol > 0)
                         {
-                            // No temperature yet but we have a weather symbol
+                            // No temperature yet but weather symbol exists
                             // Set default temps and mark as valid
                             days[dIdx].tempMin = 0;
                             days[dIdx].tempMax = 0;
@@ -1151,14 +1091,14 @@ void fetchWeatherData()
                         }
 #endif
 
-                        // Check if we have all 6 days now
+                        // Check if all 6 days collected
                         if (daysCollected >= 6)
                         {
                             break;
                         }
                     }
                 }
-            } // Close the bounds check if statement
+            }
         }
 
         // Move to next object
@@ -1248,10 +1188,8 @@ void fetchWeatherData()
     Serial.println("====== WEATHER FETCH COMPLETE ======");
 }
 
-/**
- * Fetches historical weather data from SMHI API
- * Uses latest-months period for hourly data from past ~4 months
- */
+// Fetches historical weather data from SMHI API
+// Uses latest-months period for hourly data from past ~4 months
 void fetchHistoricalData()
 {
     // Check if already fetching
@@ -1311,7 +1249,7 @@ void fetchHistoricalData()
 
     // Create HTTP client
     HTTPClient http;
-    http.setTimeout(120000);
+    http.setTimeout(60000);
     http.setReuse(false);
 
     // Connect to API
@@ -1486,13 +1424,11 @@ parsing_done:
 }
 
 // ============================================================================
-// SECTION 10: USER INTERFACE UPDATE FUNCTIONS
+// SECTION 11: USER INTERFACE UPDATE FUNCTIONS
 // ============================================================================
 // Functions that update the display with new data
 
-/**
- * Updates Page 1 with current weather and hourly forecast
- */
+// Updates Page 1 with current weather and hourly forecast
 void updateCurrentWeatherDisplay()
 {
     Serial.println("Updating current weather display...");
@@ -1672,9 +1608,7 @@ void updateCurrentWeatherDisplay()
     lv_timer_handler();
 }
 
-/**
- * Updates Page 2 with 6-day forecast
- */
+// Updates Page 2 with 6-day forecast
 void updateForecastDisplay()
 {
     Serial.println("Updating forecast display...");
@@ -1754,240 +1688,11 @@ void updateForecastDisplay()
 }
 
 // ============================================================================
-// SECTION 11: DROPDOWN MENU FUNCTIONS
-// ============================================================================
-// Functions for the settings dropdown menu
-
-// Forward declaration
-void updateDropdownContent();
-
-/**
- * Toggles dropdown menu visibility with animation
- */
-void toggleDropdownMenu()
-{
-    if (dropdownPanel == NULL)
-        return;
-
-    dropdownOpen = !dropdownOpen;
-
-    if (dropdownOpen)
-    {
-        // Show dropdown with slide animation
-        lv_obj_clear_flag(dropdownPanel, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_y(dropdownPanel, -300); // Start above screen
-
-        // Create slide down animation
-        lv_anim_t anim;
-        lv_anim_init(&anim);
-        lv_anim_set_var(&anim, dropdownPanel);
-        lv_anim_set_values(&anim, -300, 0); // Slide from -300 to 0
-        lv_anim_set_time(&anim, 300);       // 300ms duration
-        lv_anim_set_exec_cb(&anim, (lv_anim_exec_xcb_t)lv_obj_set_y);
-        lv_anim_set_path_cb(&anim, lv_anim_path_ease_out);
-        lv_anim_start(&anim);
-
-        updateDropdownContent();
-    }
-    else
-    {
-        // Hide dropdown with slide animation
-        lv_anim_t anim;
-        lv_anim_init(&anim);
-        lv_anim_set_var(&anim, dropdownPanel);
-        lv_anim_set_values(&anim, 0, -300); // Slide from 0 to -300
-        lv_anim_set_time(&anim, 300);
-        lv_anim_set_exec_cb(&anim, (lv_anim_exec_xcb_t)lv_obj_set_y);
-        lv_anim_set_path_cb(&anim, lv_anim_path_ease_in);
-
-        // Hide after animation completes
-        lv_anim_set_ready_cb(&anim, [](lv_anim_t *a)
-                             { lv_obj_add_flag((lv_obj_t *)a->var, LV_OBJ_FLAG_HIDDEN); });
-
-        lv_anim_start(&anim);
-    }
-}
-
-/**
- * Event handler for status bar click
- */
-void handleStatusBarClick(lv_event_t *e)
-{
-    toggleDropdownMenu();
-}
-
-/**
- * Event handler for WiFi toggle button
- */
-void handleWifiToggle(lv_event_t *e)
-{
-    wifiEnabled = !wifiEnabled;
-
-    if (wifiEnabled)
-    {
-        // Turn WiFi ON
-        lv_label_set_text(lv_obj_get_child(wifiToggleBtn, 0), "WiFi: ON");
-        lv_obj_set_style_bg_color(wifiToggleBtn, lv_color_hex(0x4CAF50), 0);
-        wifiConnecting = true;
-        updateDropdownContent();
-
-        // Start WiFi
-        WiFi.mode(WIFI_STA);
-        WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    }
-    else
-    {
-        // Turn WiFi OFF
-        lv_label_set_text(lv_obj_get_child(wifiToggleBtn, 0), "WiFi: OFF");
-        lv_obj_set_style_bg_color(wifiToggleBtn, lv_color_hex(0x666666), 0);
-        wifiConnecting = false;
-
-        // Stop WiFi
-        WiFi.disconnect(true);
-        WiFi.mode(WIFI_OFF);
-    }
-
-    updateDropdownContent();
-}
-
-/**
- * Event handler for auto-refresh toggle
- */
-void handleAutoRefreshToggle(lv_event_t *e)
-{
-    autoRefresh = !autoRefresh;
-
-    if (autoRefresh)
-    {
-        lv_label_set_text(lv_obj_get_child(autoRefreshToggleBtn, 0), "Auto: ON");
-        lv_obj_set_style_bg_color(autoRefreshToggleBtn, lv_color_hex(0x4CAF50), 0);
-    }
-    else
-    {
-        lv_label_set_text(lv_obj_get_child(autoRefreshToggleBtn, 0), "Auto: OFF");
-        lv_obj_set_style_bg_color(autoRefreshToggleBtn, lv_color_hex(0x666666), 0);
-    }
-}
-
-/**
- * Event handler for refresh interval change
- */
-void handleIntervalChange(lv_event_t *e)
-{
-    uint16_t selection = lv_dropdown_get_selected(intervalDropdown);
-
-    // Set interval based on selection
-    switch (selection)
-    {
-    case 0:
-        refreshInterval = 5 * 60 * 1000;
-        break; // 5 minutes
-    case 1:
-        refreshInterval = 10 * 60 * 1000;
-        break; // 10 minutes
-    case 2:
-        refreshInterval = 15 * 60 * 1000;
-        break; // 15 minutes
-    case 3:
-        refreshInterval = 30 * 60 * 1000;
-        break; // 30 minutes
-    case 4:
-        refreshInterval = 60 * 60 * 1000;
-        break; // 60 minutes
-    default:
-        refreshInterval = 15 * 60 * 1000;
-        break;
-    }
-}
-
-/**
- * Updates dropdown menu content with current status
- */
-void updateDropdownContent()
-{
-    if (!dropdownPanel || !dropdownOpen)
-        return;
-
-    // Update WiFi status
-    if (wifiStatusLabel)
-    {
-        if (WiFi.status() == WL_CONNECTED)
-        {
-            char statusText[64];
-            snprintf(statusText, sizeof(statusText), "Connected to: %s", WIFI_SSID);
-            lv_label_set_text(wifiStatusLabel, statusText);
-        }
-        else if (wifiConnecting)
-        {
-            lv_label_set_text(wifiStatusLabel, "Connecting...");
-        }
-        else if (wifiEnabled)
-        {
-            lv_label_set_text(wifiStatusLabel, "Disconnected");
-        }
-        else
-        {
-            lv_label_set_text(wifiStatusLabel, "WiFi Off");
-        }
-    }
-
-    // Update signal strength
-    if (wifiSignalLabel)
-    {
-        if (WiFi.status() == WL_CONNECTED)
-        {
-            int rssi = WiFi.RSSI();
-            int percent = convertRssiToPercent(rssi);
-            char signalText[64];
-            snprintf(signalText, sizeof(signalText), "Signal: %d%% (%s)",
-                     percent, getSignalStrengthText(rssi));
-            lv_label_set_text(wifiSignalLabel, signalText);
-        }
-        else
-        {
-            lv_label_set_text(wifiSignalLabel, "Signal: --");
-        }
-    }
-
-    // Update connection details
-    if (wifiDetailsLabel)
-    {
-        if (WiFi.status() == WL_CONNECTED)
-        {
-            char detailsText[128];
-            IPAddress ip = WiFi.localIP();
-
-            if (ip[0] != 0)
-            {
-                snprintf(detailsText, sizeof(detailsText),
-                         "IP: %d.%d.%d.%d\nMAC: %s\nChannel: %d",
-                         ip[0], ip[1], ip[2], ip[3],
-                         WiFi.macAddress().c_str(),
-                         WiFi.channel());
-                lv_label_set_text(wifiDetailsLabel, detailsText);
-            }
-            else
-            {
-                lv_label_set_text(wifiDetailsLabel, "Getting IP address...");
-            }
-        }
-        else
-        {
-            lv_label_set_text(wifiDetailsLabel, "No connection");
-        }
-    }
-
-    lv_timer_handler();
-}
-
-// ============================================================================
 // SECTION 12: USER INTERFACE CREATION
 // ============================================================================
 // Functions to create all UI elements
 
-/**
- * Event handler for refresh button
- */
+// Event handler for refresh button
 void handleRefreshButton(lv_event_t *e)
 {
     if (e == NULL)
@@ -2011,9 +1716,7 @@ void handleRefreshButton(lv_event_t *e)
     fetchWeatherData();
 }
 
-/**
- * Event handler for city selection modal button
- */
+// Event handler for city selection modal button
 void handleCitySelection(lv_event_t *e)
 {
     lv_obj_t *btn = lv_event_get_target(e);
@@ -2040,9 +1743,7 @@ void handleCitySelection(lv_event_t *e)
     }
 }
 
-/**
- * Event handler for city label click - opens city selection modal
- */
+// Event handler for city label click - opens city selection modal
 void handleCityLabelClick(lv_event_t *e)
 {
     Serial.println("City label clicked - opening city selector");
@@ -2101,9 +1802,7 @@ void handleCityLabelClick(lv_event_t *e)
     }
 }
 
-/**
- * Event handler for city dropdown in settings
- */
+// Event handler for city dropdown in settings
 void handleCityDropdownChange(lv_event_t *e)
 {
     uint16_t selection = lv_dropdown_get_selected(cityDropdown);
@@ -2150,9 +1849,7 @@ void handleCityDropdownChange(lv_event_t *e)
     }
 }
 
-/**
- * Event handler for parameter dropdown in settings
- */
+// Event handler for parameter dropdown in settings
 void handleParameterDropdownChange(lv_event_t *e)
 {
     uint16_t selection = lv_dropdown_get_selected(parameterDropdown);
@@ -2187,10 +1884,66 @@ void handleParameterDropdownChange(lv_event_t *e)
     }
 }
 
-/**
- * Event handler for historical data slider
- * Updates chart display when slider is moved
- */
+// Event handler for "Set as Default" button
+// Saves current city and parameter selection to storage
+void handleSaveDefaultButton(lv_event_t *e)
+{
+    saveDefaultSettings();
+
+    // Optional: Show feedback to user (you can add a popup later)
+    Serial.println("User clicked 'Set as Default'");
+}
+
+// Event handler for "Reset to Default" button
+// Resets to user's saved default settings
+void handleResetDefaultButton(lv_event_t *e)
+{
+    resetToSavedDefaults();
+
+    // Refresh weather data with new defaults
+    if (WiFi.status() == WL_CONNECTED && !isFetching)
+    {
+        fetchWeatherData();
+    }
+
+    // Update historical label
+    historicalDataFetched = false;
+    historicalDataCount = 0;
+
+    if (historicalLabel != NULL)
+    {
+        char labelText[128];
+        snprintf(labelText, sizeof(labelText), "%s - %s\nClick 'Load Historical Data'",
+                 cities[selectedCityIndex].name,
+                 parameters[selectedParameterIndex].name);
+        lv_label_set_text(historicalLabel, labelText);
+    }
+
+    // Clear historical chart
+    if (historicalChart != NULL)
+    {
+        lv_chart_series_t *series = lv_chart_get_series_next(historicalChart, NULL);
+        if (series != NULL)
+        {
+            for (int i = 0; i < 100; i++)
+            {
+                lv_chart_set_value_by_id(historicalChart, series, i, 0);
+            }
+            lv_chart_refresh(historicalChart);
+        }
+    }
+
+    // Update city label on main page
+    if (cityLabel)
+    {
+        lv_label_set_text(cityLabel, cities[selectedCityIndex].name);
+    }
+
+    Serial.println("User clicked 'Reset to Default'");
+}
+
+// Event handler for historical data slider
+// Updates chart display when slider is moved
 void handleHistoricalSlider(lv_event_t *e)
 {
     int32_t value = lv_slider_get_value(historicalSlider);
@@ -2200,10 +1953,8 @@ void handleHistoricalSlider(lv_event_t *e)
     updateHistoricalChart();
 }
 
-/**
- * Updates historical chart with data based on slider position
- * Slider at 0 = oldest data, slider at 100 = newest data
- */
+// Updates historical chart with data based on slider position
+// Slider at 0 = oldest data, slider at 100 = newest data
 void updateHistoricalChart()
 {
     if (!historicalDataFetched || historicalDataCount == 0 || historicalChart == NULL)
@@ -2324,9 +2075,7 @@ void updateHistoricalChart()
     }
 }
 
-/**
- * Creates Page 1 (Current Weather) UI elements
- */
+// Creates Page 1 (Current Weather) UI elements
 void createCurrentWeatherPage(lv_obj_t *page1)
 {
     // City name label (display only - change in Settings page)
@@ -2507,7 +2256,7 @@ void createCurrentWeatherPage(lv_obj_t *page1)
 
     // Version label
     lv_obj_t *versionLabel = lv_label_create(page1);
-    lv_label_set_text(versionLabel, "v3");
+    lv_label_set_text(versionLabel, "v4");
     lv_obj_set_style_text_color(versionLabel, lv_color_hex(0x888888), 0);
     lv_obj_set_style_text_font(versionLabel, &lv_font_montserrat_12, 0);
     lv_obj_align(versionLabel, LV_ALIGN_BOTTOM_RIGHT, -5, -5);
@@ -2527,9 +2276,7 @@ void createCurrentWeatherPage(lv_obj_t *page1)
     lv_obj_center(refreshBtnLabel);
 }
 
-/**
- * Creates Page 2 (6-Day Forecast) UI elements
- */
+// Creates Page 2 (6-Day Forecast) UI elements
 void createForecastPage(lv_obj_t *page2)
 {
     // Loading spinner
@@ -2610,9 +2357,7 @@ void createForecastPage(lv_obj_t *page2)
     }
 }
 
-/**
- * Creates Page 3 (Settings) UI elements
- */
+// Creates Page 3 (Settings) UI elements
 void createSettingsPage(lv_obj_t *page3)
 {
     // Page title
@@ -2685,18 +2430,46 @@ void createSettingsPage(lv_obj_t *page3)
             lv_obj_set_style_text_color(list, lv_color_white(), LV_PART_SELECTED);
         } }, LV_EVENT_CLICKED, NULL);
 
-    // Info label
-    lv_obj_t *infoLabel = lv_label_create(page3);
-    lv_label_set_text(infoLabel, "Selected parameter will be used for historical data");
-    lv_obj_set_style_text_font(infoLabel, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(infoLabel, lv_color_hex(0x888888), 0);
-    lv_obj_set_pos(infoLabel, 30, 270);
+    // ============= DEFAULT SETTINGS BUTTONS SECTION =============
+    lv_obj_t *defaultsSection = lv_label_create(page3);
+    lv_label_set_text(defaultsSection, "Default Settings");
+    lv_obj_set_style_text_font(defaultsSection, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(defaultsSection, lv_color_white(), 0);
+    lv_obj_set_pos(defaultsSection, 30, 270);
+
+    // "Set as Default" button
+    lv_obj_t *saveDefaultBtn = lv_btn_create(page3);
+    lv_obj_set_size(saveDefaultBtn, 540, 50);
+    lv_obj_set_pos(saveDefaultBtn, 30, 305);
+    lv_obj_set_style_bg_color(saveDefaultBtn, lv_color_hex(0x4CAF50), 0); // Green color
+    lv_obj_set_style_bg_color(saveDefaultBtn, lv_color_hex(0x45a049), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(saveDefaultBtn, 8, 0);
+    lv_obj_add_event_cb(saveDefaultBtn, handleSaveDefaultButton, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *saveDefaultLabel = lv_label_create(saveDefaultBtn);
+    lv_label_set_text(saveDefaultLabel, "Set as Default");
+    lv_obj_set_style_text_font(saveDefaultLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(saveDefaultLabel, lv_color_white(), 0);
+    lv_obj_center(saveDefaultLabel);
+
+    // "Reset to Default" button
+    lv_obj_t *resetDefaultBtn = lv_btn_create(page3);
+    lv_obj_set_size(resetDefaultBtn, 540, 50);
+    lv_obj_set_pos(resetDefaultBtn, 30, 370);
+    lv_obj_set_style_bg_color(resetDefaultBtn, lv_color_hex(0xFF5722), 0); // Orange/Red color
+    lv_obj_set_style_bg_color(resetDefaultBtn, lv_color_hex(0xe64a19), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(resetDefaultBtn, 8, 0);
+    lv_obj_add_event_cb(resetDefaultBtn, handleResetDefaultButton, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *resetDefaultLabel = lv_label_create(resetDefaultBtn);
+    lv_label_set_text(resetDefaultLabel, "Reset to Default");
+    lv_obj_set_style_text_font(resetDefaultLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(resetDefaultLabel, lv_color_white(), 0);
+    lv_obj_center(resetDefaultLabel);
 }
 
-/**
- * Creates Page 4 (Historical Data) UI elements
- * API: https://opendata-download-metobs.smhi.se/api/version/1.0/parameter/{param}/station/{station}/period/latest-months/data.json
- */
+// Creates Page 4 (Historical Data) UI elements
+// API: https://opendata-download-metobs.smhi.se/api/version/1.0/parameter/{param}/station/{station}/period/latest-months/data.json
 void createHistoricalPage(lv_obj_t *page4)
 {
     // Page title
@@ -2804,115 +2577,7 @@ void createHistoricalPage(lv_obj_t *page4)
         } }, LV_EVENT_CLICKED, NULL);
 }
 
-/**
- * Creates dropdown menu UI
- */
-void createDropdownMenu(lv_obj_t *statusBar)
-{
-    // Create dropdown panel
-    dropdownPanel = lv_obj_create(lv_layer_top());
-    lv_obj_set_size(dropdownPanel, amoled.width(), 290);
-    lv_obj_align(dropdownPanel, LV_ALIGN_TOP_MID, 0, 0);
-    lv_obj_set_style_bg_color(dropdownPanel, lv_color_hex(0x0D1321), 0);
-    lv_obj_set_style_bg_opa(dropdownPanel, LV_OPA_80, 0);
-    lv_obj_set_style_border_color(dropdownPanel, lv_color_hex(0x2A2F3A), 0);
-    lv_obj_set_style_border_width(dropdownPanel, 1, 0);
-    lv_obj_set_style_radius(dropdownPanel, 16, 0);
-    lv_obj_set_style_shadow_width(dropdownPanel, 20, 0);
-    lv_obj_set_style_shadow_color(dropdownPanel, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_shadow_opa(dropdownPanel, LV_OPA_40, 0);
-    lv_obj_set_style_pad_all(dropdownPanel, 0, 0);
-    lv_obj_clear_flag(dropdownPanel, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(dropdownPanel, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(dropdownPanel, LV_OBJ_FLAG_CLICKABLE);
-
-    // Add click handler to close when tapping background
-    lv_obj_add_event_cb(dropdownPanel, [](lv_event_t *e)
-                        {
-        lv_obj_t* target = lv_event_get_target(e);
-        if (target == dropdownPanel) toggleDropdownMenu(); }, LV_EVENT_CLICKED, NULL);
-
-    // Panel title
-    lv_obj_t *panelTitle = lv_label_create(dropdownPanel);
-    lv_label_set_text(panelTitle, "Quick Settings");
-    lv_obj_set_style_text_font(panelTitle, &lv_font_montserrat_18, 0);
-    lv_obj_set_style_text_color(panelTitle, lv_color_white(), 0);
-    lv_obj_align(panelTitle, LV_ALIGN_TOP_LEFT, 10, 10);
-
-    // WiFi toggle button
-    wifiToggleBtn = lv_btn_create(dropdownPanel);
-    lv_obj_set_size(wifiToggleBtn, 105, 50);
-    lv_obj_align(wifiToggleBtn, LV_ALIGN_TOP_LEFT, 10, 40);
-    lv_obj_set_style_bg_color(wifiToggleBtn, lv_color_hex(0x4CAF50), 0);
-    lv_obj_set_style_radius(wifiToggleBtn, 10, 0);
-    lv_obj_add_event_cb(wifiToggleBtn, handleWifiToggle, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *wifiToggleLabel = lv_label_create(wifiToggleBtn);
-    lv_label_set_text(wifiToggleLabel, "WiFi: ON");
-    lv_obj_center(wifiToggleLabel);
-
-    // Auto refresh toggle button
-    autoRefreshToggleBtn = lv_btn_create(dropdownPanel);
-    lv_obj_set_size(autoRefreshToggleBtn, 105, 50);
-    lv_obj_align(autoRefreshToggleBtn, LV_ALIGN_TOP_RIGHT, -10, 40);
-    lv_obj_set_style_bg_color(autoRefreshToggleBtn, lv_color_hex(0x4CAF50), 0);
-    lv_obj_set_style_radius(autoRefreshToggleBtn, 10, 0);
-    lv_obj_add_event_cb(autoRefreshToggleBtn, handleAutoRefreshToggle, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *autoToggleLabel = lv_label_create(autoRefreshToggleBtn);
-    lv_label_set_text(autoToggleLabel, "Auto: ON");
-    lv_obj_center(autoToggleLabel);
-
-    // Refresh interval label
-    lv_obj_t *intervalLabel = lv_label_create(dropdownPanel);
-    lv_label_set_text(intervalLabel, "Refresh Interval:");
-    lv_obj_set_style_text_color(intervalLabel, lv_color_white(), 0);
-    lv_obj_align(intervalLabel, LV_ALIGN_TOP_LEFT, 10, 100);
-
-    // Interval dropdown
-    intervalDropdown = lv_dropdown_create(dropdownPanel);
-    lv_dropdown_set_options(intervalDropdown, "5 min\n10 min\n15 min\n30 min\n60 min");
-    lv_dropdown_set_selected(intervalDropdown, 2); // Default to 15 min
-    lv_obj_set_width(intervalDropdown, 110);
-    lv_obj_align(intervalDropdown, LV_ALIGN_TOP_RIGHT, -10, 95);
-    lv_obj_add_event_cb(intervalDropdown, handleIntervalChange, LV_EVENT_VALUE_CHANGED, NULL);
-
-    // Separator line
-    lv_obj_t *separator = lv_obj_create(dropdownPanel);
-    lv_obj_set_size(separator, amoled.width() - 20, 2);
-    lv_obj_align(separator, LV_ALIGN_TOP_MID, 0, 135);
-    lv_obj_set_style_bg_color(separator, lv_color_hex(0x333333), 0);
-    lv_obj_set_style_border_width(separator, 0, 0);
-
-    // WiFi status label
-    wifiStatusLabel = lv_label_create(dropdownPanel);
-    lv_label_set_text(wifiStatusLabel, "Connecting...");
-    lv_obj_set_style_text_font(wifiStatusLabel, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(wifiStatusLabel, lv_color_hex(0x2196F3), 0);
-    lv_obj_align(wifiStatusLabel, LV_ALIGN_TOP_LEFT, 10, 145);
-
-    // WiFi signal label
-    wifiSignalLabel = lv_label_create(dropdownPanel);
-    lv_label_set_text(wifiSignalLabel, "Signal: --");
-    lv_obj_set_style_text_color(wifiSignalLabel, lv_color_white(), 0);
-    lv_obj_align(wifiSignalLabel, LV_ALIGN_TOP_LEFT, 10, 170);
-
-    // WiFi details label
-    wifiDetailsLabel = lv_label_create(dropdownPanel);
-    lv_label_set_text(wifiDetailsLabel, "No connection details");
-    lv_obj_set_style_text_font(wifiDetailsLabel, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(wifiDetailsLabel, lv_color_hex(0xAAAAAA), 0);
-    lv_obj_align(wifiDetailsLabel, LV_ALIGN_TOP_LEFT, 10, 195);
-
-    // Close hint
-    lv_obj_t *closeHint = lv_label_create(dropdownPanel);
-    lv_label_set_text(closeHint, "Tap background to close");
-    lv_obj_set_style_text_font(closeHint, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(closeHint, lv_color_hex(0x666666), 0);
-    lv_obj_align(closeHint, LV_ALIGN_BOTTOM_MID, 0, -5);
-}
-
-/**
- * Creates the main user interface
- */
+// Creates the main user interface
 void createMainUI()
 {
     // Create tileview for swipeable pages
@@ -3030,9 +2695,7 @@ void createMainUI()
 // ============================================================================
 // Arduino main functions
 
-/**
- * Setup function - runs once at startup
- */
+// Setup function - runs once at startup
 void setup()
 {
     // Initialize serial communication for debugging
@@ -3085,6 +2748,10 @@ void setup()
     // Initialize LVGL graphics
     beginLvglHelper(amoled);
     delay(100); // Let LVGL stabilize
+
+    // Load saved settings from non-volatile storage
+    Serial.println("Loading saved settings...");
+    loadDefaultSettings();
 
     // Create user interface
     createMainUI();
@@ -3150,15 +2817,12 @@ void setup()
     Serial.println("Setup complete");
 }
 
-/**
- * Loop function - runs continuously after setup
- */
+// Loop function - runs continuously after setup
 void loop()
 {
     // Static variables retain their values between loop iterations
     static uint32_t lastWiFiCheck = 0;
     static uint32_t lastTimeDisplayUpdate = 0;
-    static uint32_t lastDropdownRefresh = 0;
     static uint32_t lastUpdateLabelRefresh = 0;
     static bool initialDataFetched = false;
     static bool firstLoop = true;
@@ -3223,13 +2887,6 @@ void loop()
         updateTimeDisplay();
     }
 
-    // Update dropdown if open (every second)
-    if (dropdownOpen && currentTime - lastDropdownRefresh > 1000)
-    {
-        lastDropdownRefresh = currentTime;
-        updateDropdownContent();
-    }
-
     // Update "time ago" label every minute
     if (currentTime - lastUpdateLabelRefresh > 60000 &&
         updateLabel &&
@@ -3283,8 +2940,6 @@ void loop()
                 lv_timer_handler();
                 fetchWeatherData();
             }
-
-            updateDropdownContent();
         }
     }
 
